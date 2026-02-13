@@ -1,8 +1,9 @@
 #include <WiFi.h>
 #include <esp_now.h>
 
-// MASTER MAC ADDRESS (Given by User)
-uint8_t masterMAC[] = {0xF0, 0x24, 0xF9, 0x0D, 0x90, 0xA4};
+// MASTER MAC ADDRESS: set this to your Master Gateway's MAC (see Master Serial or Pi "RX:" lines).
+// Bidirectional: Pi sends TX:<this_slave_MAC>:<HEX> -> Master -> this slave OnDataRecv; slave sends ACK -> Master -> Pi sees RX:<this_slave_MAC>:41434b...
+uint8_t masterMAC[] = {0xC0, 0xCD, 0xD6, 0x85, 0x70, 0xCC};
 
 // Data Structure
 typedef struct __attribute__((packed)) {
@@ -32,17 +33,49 @@ void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   }
 }
 
-// Callback when data is received (Core v3 Signature)
+// Last command received from Pi (0=OFF, 1=ON) for optional use in loop
+volatile uint8_t lastCommand = 2;  // 2 = DATA (no command yet)
+
+// Callback when data is received from Master (Pi -> Master -> Slave). Bidirectional: reply with ACK.
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData,
                 int len) {
-  Serial.print("\n--- Data Received from ");
-  printMAC(info->src_addr);
-  Serial.println(" ---");
-  Serial.print("Content: ");
-  for (int i = 0; i < len; i++) {
-    Serial.print((char)incomingData[i]);
+  Serial.print("\n--- Data Received from Pi (via Master) --- ");
+  Serial.print(len);
+  Serial.println(" bytes");
+
+  if (len >= 6) {
+    // 6-byte ControlPacket: type, command, value (float LE)
+    const ControlPacket *p = (const ControlPacket *)incomingData;
+    lastCommand = p->command;
+    Serial.print("  ControlPacket: type=");
+    Serial.print(p->type);
+    Serial.print(" command=");
+    Serial.print(p->command);
+    Serial.print(" value=");
+    Serial.println(p->value);
+    // Send ACK back to Master (Pi will see RX:<this_slave_MAC>:<hex>)
+    uint8_t ack[] = {'A', 'C', 'K', (uint8_t)p->type, (uint8_t)p->command, 0};
+    esp_now_send(masterMAC, ack, sizeof(ack));
+  } else if (len == 1) {
+    // Single-byte command: 0x00 = OFF/STOP, 0x01 = ON/START
+    lastCommand = incomingData[0];
+    Serial.print("  Command: ");
+    Serial.println(incomingData[0] == 1 ? "ON/START (0x01)" : incomingData[0] == 0 ? "OFF/STOP (0x00)" : "?");
+    // Send ACK back so Pi sees bidirectional: ACK + echo of command byte
+    uint8_t ack[] = {'A', 'C', 'K', incomingData[0]};
+    esp_now_send(masterMAC, ack, sizeof(ack));
+  } else {
+    // Raw hex: print and echo back first byte as ack
+    Serial.print("  HEX: ");
+    for (int i = 0; i < len && i < 32; i++) {
+      if (incomingData[i] < 16) Serial.print("0");
+      Serial.print(incomingData[i], HEX);
+    }
+    Serial.println();
+    uint8_t ack[] = {'A', 'C', 'K', len > 0 ? incomingData[0] : 0};
+    esp_now_send(masterMAC, ack, sizeof(ack));
   }
-  Serial.println("\n----------------------------\n");
+  Serial.println("----------------------------\n");
 }
 
 void setup() {

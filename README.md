@@ -64,6 +64,15 @@ Use this only if you cannot use USB (e.g. no free USB port or a bare ESP with on
 - **USB:** When the Pi opens the serial port, it toggles **DTR** (low → 0.1 s → high), which **resets the Master ESP32**. The Master boots and sends HEARTBEAT; the Pi sees it and connects. You do **not** need to press EN or power-cycle the Master.
 - **GPIO UART (`/dev/serial0`):** DTR is usually not wired to the ESP32, so the Pi **cannot** reset the Master. Ensure the Master is **powered and running** before (or when) you start the Pi; the Pi will retry until it sees HEARTBEAT. If the Master was off, power it on and wait for the next Pi retry (~3 s).
 
+### Troubleshooting: Pi says "Master: disconnected (waiting for HEARTBEAT)"
+
+If the ESP Serial Monitor shows `HEARTBEAT` and `Master Gateway Started` but the Pi never sees them:
+
+1. **Port:** You must use the same link the Pi uses. If the ESP is connected to the Pi by **wires**, use `/dev/ttyS0` or `/dev/serial0` on the Pi. If the ESP is connected by **USB**, use `/dev/ttyUSB0` or `/dev/ttyACM0`. You cannot see HEARTBEAT on the Pi if the ESP is plugged into your PC’s USB (that serial is not connected to the Pi).
+2. **GPIO wiring:** The Master uses **UART0** (ESP32 **TX = GPIO1**, **RX = GPIO3**). Connect Pi GPIO 14 (TX) → ESP GPIO 3 (RX), Pi GPIO 15 (RX) ← ESP GPIO 1 (TX), GND common. Do not use GPIO 16/17—the current firmware does not use UART1.
+3. **Serial console:** On the Pi, disable the serial console so the UART is free: `sudo raspi-config` → Interface Options → Serial Port → disable "Login shell over serial", enable "Serial port hardware".
+4. **Debug:** Run `python3 controller.py /dev/ttyS0 --debug` (or your port). If no `SERIAL <-` lines appear, the Pi is not receiving any data (wrong port or wiring).
+
 ---
 
 ## RFID flow (no SSID)
@@ -90,6 +99,45 @@ Flow: Readers stream EPC to Pi. On first tag received, Pi sends STOP to all read
 1. Flash **Master** and connect to Pi.
 2. Copy `slave_template` to a new folder, change the payload struct, flash.
 3. In `controller.py` (or your app) handle the new hex format and add any commands (e.g. TX to slaves).
+
+---
+
+## Are these three files enough for another project?
+
+**Yes.** `master_gateway/master_gateway.ino`, `pi_controller/controller.py`, and `slave_template/slave_template.ino` give you the full Pi–Master–Slave communication stack. Use the checklist below so nothing is missed.
+
+### What you get
+
+| File | Provides |
+|------|----------|
+| **master_gateway.ino** | Transparent bridge. No slave MACs; peers added when Pi sends `TX:<MAC>:<HEX>`. Sends `RX:`, `HEARTBEAT`, `MAC:<MASTER_MAC>`, `MASTER_READY`; responds to `PING`. |
+| **controller.py** | Serial open, reader thread, watchdog (DTR reset after 60 s no data), `send_command(mac, hex)`, `process_incoming_data(line)`. Example: parses 6-byte `<BBf`; CLI for manual `MAC HEX`. |
+| **slave_template.ino** | `masterMAC[]`, add Master as peer, example `ControlPacket` (type, command, value), send every 5 s, `OnDataRecv` example. |
+
+### Checklist for another project
+
+1. **Wiring (important)**  
+   The Master uses **Serial** = **UART0** (ESP32: **TX = GPIO1**, **RX = GPIO3**; same as USB on dev boards).
+   - **USB:** Connect the ESP Master to the Pi with a USB cable. Pi sees `/dev/ttyUSB0` or `/dev/ttyACM0`. One cable; no extra wiring.
+   - **Pi GPIO UART:** Wire Pi GPIO 14 (TX) → ESP32 **GPIO 3 (RX)**, Pi GPIO 15 (RX) ← ESP32 **GPIO 1 (TX)**, GND ↔ GND. On the Pi use `/dev/ttyS0` or `/dev/serial0` (enable UART, disable serial console; see "Option 2" above). If the Pi reports "disconnected" while the ESP Serial Monitor shows HEARTBEAT, the Pi is not receiving—check you are using ESP **GPIO 1 and 3** (UART0), not 16/17.
+
+2. **Slave**  
+   - Set `masterMAC[]` to your Master’s MAC (get it from Master’s Serial Monitor or from `MAC:` lines from the Pi).
+   - Change `ControlPacket` and `sendPacket()` / `OnDataRecv` to your payload and logic. Flash.
+
+3. **Pi**  
+   - Set `SERIAL_PORT` in `controller.py` or pass port as argument: `python3 controller.py /dev/ttyS0` (GPIO) or `/dev/ttyUSB0` if you later use a Master that speaks on USB.
+   - Ensure user is in `dialout`: `sudo usermod -aG dialout $USER` (then log out/in).
+   - Your app: keep the same protocol (`TX:<MAC>:<HEX>\n`, parse `RX:`, `OK`, `ERR:`, `HEARTBEAT`); add your slave MACs and your payload handling.
+
+4. **Optional but recommended**  
+   - **Reconnection:** This controller has **no auto-reconnect**. If the serial port drops, the reader thread exits and the process does not reopen the port. For production, add logic like house_automation: when `serial_conn` is closed or open fails, close and retry open in a loop (e.g. sleep 5 s on failure, 2 s after read error).
+   - **DTR on connect:** This controller does not toggle DTR when opening the port (only the watchdog toggles DTR on timeout). For a clean start, toggle DTR after open (low → 0.1 s → high) so the Master resets when the Pi connects.
+
+### Summary
+
+- **Enough for another project:** Yes — same Master, same protocol; customize slave (MAC + payload) and Pi (port + MAC list + payload handling).
+- **Don’t forget:** Wire Pi to Master’s **UART0** (ESP32 **GPIO 1 TX, GPIO 3 RX**) for GPIO link; or use USB. Set **slave** `masterMAC[]`. Optionally add **reconnect** and **DTR on connect** on the Pi.
 
 ---
 
