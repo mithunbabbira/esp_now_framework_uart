@@ -7,8 +7,8 @@
  *
  * Protocol (Pi ↔ Master):
  *   Pi  receives:  RX:<SRC_MAC>:<HEX>\n       (data from any slave)
- *   Pi  receives:  HEARTBEAT\n                 (every 10 s, Master is alive)
- *   Pi  receives:  MAC:<MASTER_MAC>\n          (on boot + every 10 s)
+ *   Pi  receives:  HEARTBEAT\n                 (every 2 s, so Pi sees Master quickly)
+ *   Pi  receives:  MAC:<MASTER_MAC>\n          (on boot + every 2 s)
  *   Pi  sends:     TX:<DST_MAC>:<HEX>\n       (data to a specific slave)
  *
  * Wiring (Pi ↔ ESP32):
@@ -34,8 +34,10 @@
 #define PI_TX_PIN  17   // ESP32 transmits to Pi RX (GPIO 15)
 
 // ── Timing ─────────────────────────────────────────────────
-#define HEARTBEAT_INTERVAL_MS  10000
+// Send HEARTBEAT every 2s so Pi sees Master within 2s of opening port (no restart needed)
+#define HEARTBEAT_INTERVAL_MS  2000
 #define SERIAL_INPUT_MAX       256
+#define SERIAL_LINE_TIMEOUT_MS 5000
 
 // ── UART to Pi ─────────────────────────────────────────────
 HardwareSerial PiSerial(1);
@@ -43,6 +45,7 @@ HardwareSerial PiSerial(1);
 // ── Serial input buffer ────────────────────────────────────
 static char inputBuf[SERIAL_INPUT_MAX];
 static uint16_t inputLen = 0;
+static unsigned long lastLineActivity = 0;
 
 // ════════════════════════════════════════════════════════════
 //  Helpers
@@ -205,6 +208,8 @@ void setup() {
 
   // UART to Pi
   PiSerial.begin(115200, SERIAL_8N1, PI_RX_PIN, PI_TX_PIN);
+  // Flush any stale bytes so first Pi command is read cleanly
+  while (PiSerial.available()) PiSerial.read();
 
   // WiFi STA (no AP join — ESP-NOW only)
   WiFi.mode(WIFI_STA);
@@ -256,6 +261,7 @@ void loop() {
   // ── Read commands from Pi ──
   while (PiSerial.available()) {
     char c = (char)PiSerial.read();
+    lastLineActivity = millis();
     if (c == '\n') {
       inputBuf[inputLen] = '\0';
       if (inputLen > 0) processCommand(inputBuf);
@@ -263,6 +269,10 @@ void loop() {
     } else if (c != '\r' && inputLen < SERIAL_INPUT_MAX - 1) {
       inputBuf[inputLen++] = c;
     }
+  }
+  // Discard stale partial line (e.g. garbage from Pi boot) so PING can be read
+  if (inputLen > 0 && (millis() - lastLineActivity > SERIAL_LINE_TIMEOUT_MS)) {
+    inputLen = 0;
   }
 
   delay(1);  // yield

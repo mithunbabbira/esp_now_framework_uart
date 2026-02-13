@@ -59,6 +59,11 @@ Use this only if you cannot use USB (e.g. no free USB port or a bare ESP with on
 
 **Summary:** Prefer **USB** and `esp_now_serial_port: "/dev/ttyUSB0"` so no Pi pins are used. Use GPIO 14/15 only when USB is not an option.
 
+### Connection behavior (no manual Master reset)
+
+- **USB:** When the Pi opens the serial port, it toggles **DTR** (low → 0.1 s → high), which **resets the Master ESP32**. The Master boots and sends HEARTBEAT; the Pi sees it and connects. You do **not** need to press EN or power-cycle the Master.
+- **GPIO UART (`/dev/serial0`):** DTR is usually not wired to the ESP32, so the Pi **cannot** reset the Master. Ensure the Master is **powered and running** before (or when) you start the Pi; the Pi will retry until it sees HEARTBEAT. If the Master was off, power it on and wait for the next Pi retry (~3 s).
+
 ---
 
 ## RFID flow (no SSID)
